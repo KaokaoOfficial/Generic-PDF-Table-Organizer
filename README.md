@@ -1,58 +1,50 @@
-# NoiPA PDF Organizer
+# Generic PDF Table Organizer
 
-A small Python/Selenium helper for downloading your own NoiPA cartellino PDFs one at a time and organizing them into year-based folders on Windows.
+A Windows Python helper that can download PDFs from a paginated HTML table and sort them into folders by year. It is intended for a user who is already authorized to access a website and signs in manually in the browser.
 
-> **Privacy and security:** the script uses a separate Chrome profile and requires you to sign in manually. Do not publish or commit a full NoiPA URL containing temporary parameters such as `STARTKEY`, and never share passwords, session links, or downloaded documents. The script does not bypass authentication or access controls.
+## Important limitation
+
+There is no reliable way for one URL alone to automate every website: sites use different page structures, custom buttons, embedded applications, and pagination. This tool is a **best-effort generic helper** for ordinary HTML tables with dated rows and document links/buttons. It may not work on sites whose controls are custom or whose table is not exposed as standard HTML. It does not bypass login, CAPTCHA, MFA, or access restrictions.
 
 ## Requirements
 
-- Windows 10/11, Python 3.10+, and Google Chrome
-- A NoiPA account authorized to access the documents
+- Windows 10 or 11
+- Python 3.10+
+- Google Chrome
 
-## Setup
+## Setup and run
 
-1. Download/clone this repository and open Command Prompt in its folder.
-2. Install Selenium:
+Open Command Prompt in the downloaded project folder and run:
 
-   ```bat
-   py -m pip install -r requirements.txt
-   ```
+```bat
+py -m pip install -r requirements.txt
+py generic_pdf_organizer.py
+```
 
-3. Run the program:
+Or double-click `run_organizer.bat`.
 
-   ```bat
-   py noipa_organizer.py
-   ```
+The program asks for the URL of the document-listing page. It opens a dedicated Chrome profile. Sign in manually in that Chrome window if required, navigate to the listing table, then return to the terminal and press Enter. Signing into a different, already-open Chrome window will not authenticate this dedicated profile.
 
-   Or double-click `run_noipa.bat`.
-4. In the Chrome window opened by the script, sign in manually and navigate to the cartellino page showing the month/year document table. This is a separate profile from your normal Chrome window; signing in to another Chrome window does not sign in here.
-5. Return to the Command Prompt and press Enter. The script checks the main page and embedded frames for rows containing an Italian month and year.
-
-Chrome is configured to download PDFs automatically to the Windows Downloads folder. If a save dialog still appears, disable **Chrome Settings → Downloads → Ask where to save each file before downloading** in the automation profile.
+In the automation profile, disable Chrome's **Settings → Downloads → Ask where to save each file before downloading** option if Chrome shows a save dialog.
 
 ## Output
 
-Files are moved to `Desktop\NoiPA\<YEAR>\` and prefixed with the row month and year, for example:
+Completed PDFs are moved from the Windows Downloads folder to:
 
 ```text
-Desktop\NoiPA\2016\2016-09_original-name.pdf
+Desktop\PDF Archive\<YEAR>\<YEAR>-<MONTH>_<original-filename>.pdf
 ```
 
-The script downloads sequentially, then follows a visible `avanti` pagination link. Test a few documents first and review the console and output before processing the full archive.
+The script downloads sequentially and stops safely if it cannot identify dated rows, a document action, a completed PDF, or a recognizable next-page control. Review its console messages and test with a small listing first.
 
-## Important configuration
+## What the helper detects
 
-`NOIPA_URL` defaults to the public portal home page. Do not put a personal or temporary URL (including a URL with `STARTKEY` or other session parameters) in this public repository. Navigate to the cartellino page manually in the browser opened by the script.
+- Standard HTML tables in open tabs and nested frames
+- Italian or English month names, and common numeric month/year date formats
+- Links, buttons, and images in a dated row, preferring controls labeled as PDF/document/download
+- Common next-page labels such as `Next`, `Avanti`, `Successiva`, `>` and `»`
 
-Output and profile paths can be changed near the top of `noipa_organizer.py`. The dedicated profile is stored under `%LOCALAPPDATA%\NoiPAChromeProfile`.
-
-## Troubleshooting
-
-- **No month/year table detected:** confirm the cartellino table is visible in the automation Chrome window before pressing Enter. The script searches embedded frames too; if it still fails, stop and share only the terminal error (not a session URL or personal PDF).
-- **A document is not detected/downloaded:** NoiPA may have changed its page layout. Stop the run and review the table markup before retrying.
-- **Chrome cannot start:** close Chrome processes using the dedicated `NoiPAChromeProfile` and retry.
-
-Use this tool only for documents you are authorized to access and in accordance with NoiPA's terms and your organization's policies.
+These heuristics cannot cover every website. Do not use it to download material you are not authorized to access. Never put passwords, session URLs, or tokens in the source code or public repository.
 
 ## License
 

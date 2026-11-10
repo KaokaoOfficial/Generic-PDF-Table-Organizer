@@ -1,7 +1,7 @@
 """Download NoiPA cartellino PDFs sequentially and sort them by year.
 
-This script uses a dedicated Chrome profile and requires the user to sign in
-manually. It does not handle credentials or bypass access controls.
+Uses a dedicated Chrome profile. The user signs in and navigates to the
+cartellino table manually; credentials and session URLs are not stored.
 """
 
 from __future__ import annotations
@@ -12,20 +12,19 @@ import time
 from pathlib import Path
 
 from selenium import webdriver
-from selenium.common.exceptions import (  # type: ignore[import-untyped]
+from selenium.common.exceptions import (
     NoSuchElementException,
+    NoSuchFrameException,
     StaleElementReferenceException,
     TimeoutException,
     WebDriverException,
 )
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
 
-# Set this to a safe starting NoiPA page URL. Do not put credentials or
-# session tokens in this file. You will sign in manually in the opened browser.
+# Start at the public portal home page. Do not put a session-specific URL,
+# STARTKEY, password, or other temporary token in this file.
 NOIPA_URL = "https://noipa.mef.gov.it/"
-
 DEST_ROOT = Path.home() / "Desktop" / "NoiPA"
 DOWNLOADS_DIR = Path.home() / "Downloads"
 CHROME_PROFILE_DIR = Path.home() / "AppData" / "Local" / "NoiPAChromeProfile"
@@ -33,180 +32,215 @@ MAX_PAGES = 50
 DOWNLOAD_TIMEOUT_SECONDS = 60
 
 MONTHS = {
-    "gennaio": "01",
-    "febbraio": "02",
-    "marzo": "03",
-    "aprile": "04",
-    "maggio": "05",
-    "giugno": "06",
-    "luglio": "07",
-    "agosto": "08",
-    "settembre": "09",
-    "ottobre": "10",
-    "novembre": "11",
-    "dicembre": "12",
+    "gennaio": "01", "febbraio": "02", "marzo": "03", "aprile": "04",
+    "maggio": "05", "giugno": "06", "luglio": "07", "agosto": "08",
+    "settembre": "09", "ottobre": "10", "novembre": "11", "dicembre": "12",
 }
 
 
 def parse_year_month(text: str) -> tuple[str, str] | None:
-    """Return (YYYY, MM) when the row contains an Italian month and year."""
     year_match = re.search(r"\b(?:19|20)\d{2}\b", text)
     if not year_match:
         return None
     lowered = text.casefold()
-    for month_name, month_number in MONTHS.items():
-        if month_name in lowered:
-            return year_match.group(), month_number
+    for name, number in MONTHS.items():
+        if name in lowered:
+            return year_match.group(), number
     return None
 
 
-def wait_for_page_table(driver: webdriver.Chrome) -> None:
-    """Wait until at least one table row appears after the user logs in."""
-    WebDriverWait(driver, 300).until(
-        lambda browser: any(
-            row.is_displayed()
-            for table in browser.find_elements(By.TAG_NAME, "table")
-            for row in table.find_elements(By.TAG_NAME, "tr")
-        )
-    )
+def _find_table_frame_path(driver: webdriver.Chrome) -> tuple[int, ...] | None:
+    """Find a document table in the main page or a nested iframe."""
+    def walk(path: tuple[int, ...]) -> tuple[int, ...] | None:
+        try:
+            driver.switch_to.default_content()
+            for frame_index in path:
+                driver.switch_to.frame(frame_index)
 
+            for table in driver.find_elements(By.TAG_NAME, "table"):
+                for row in table.find_elements(By.TAG_NAME, "tr"):
+                    try:
+                        if parse_year_month(row.text):
+                            return path
+                    except StaleElementReferenceException:
+                        continue
 
-def visible_document_rows(driver: webdriver.Chrome):
-    """Find visible table rows with a recognizable month/year."""
-    found = []
-    for table in driver.find_elements(By.TAG_NAME, "table"):
-        for row in table.find_elements(By.TAG_NAME, "tr"):
-            try:
-                if row.is_displayed() and parse_year_month(row.text):
-                    found.append(row)
-            except StaleElementReferenceException:
-                continue
-    return found
-
-
-def click_document_cell(row) -> bool:
-    """Click the document-column control, falling back to its table cell."""
-    try:
-        cells = row.find_elements(By.TAG_NAME, "td")
-        if len(cells) < 4:
-            return False
-        document_cell = cells[3]
-        for selector in ("a", "button", "input", "img"):
-            controls = document_cell.find_elements(By.CSS_SELECTOR, selector)
-            for control in controls:
+            frame_count = len(driver.find_elements(By.CSS_SELECTOR, "iframe, frame"))
+            for index in range(frame_count):
                 try:
-                    control.click()
-                    return True
-                except WebDriverException:
+                    driver.switch_to.default_content()
+                    for frame_index in path:
+                        driver.switch_to.frame(frame_index)
+                    frames = driver.find_elements(By.CSS_SELECTOR, "iframe, frame")
+                    if index >= len(frames):
+                        continue
+                    driver.switch_to.frame(frames[index])
+                    found = walk(path + (index,))
+                    if found is not None:
+                        return found
+                except (NoSuchFrameException, StaleElementReferenceException, WebDriverException):
                     continue
-        document_cell.click()
+            return None
+        except (NoSuchFrameException, StaleElementReferenceException, WebDriverException):
+            return None
+        finally:
+            driver.switch_to.default_content()
+
+    return walk(())
+
+
+def _switch_to_table(driver: webdriver.Chrome) -> bool:
+    path = _find_table_frame_path(driver)
+    if path is None:
+        driver.switch_to.default_content()
+        return False
+    driver.switch_to.default_content()
+    try:
+        for frame_index in path:
+            driver.switch_to.frame(frame_index)
         return True
-    except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+    except (NoSuchFrameException, WebDriverException):
+        driver.switch_to.default_content()
         return False
 
 
-def wait_for_pdf(before: set[Path], timeout: int = DOWNLOAD_TIMEOUT_SECONDS) -> Path | None:
-    """Wait for a new completed PDF download and allow its size to settle."""
+def wait_for_table(driver: webdriver.Chrome, timeout: int = 300) -> bool:
+    """Wait for the user to reach the table, including tables inside frames."""
     deadline = time.monotonic() + timeout
-    last_candidate: Path | None = None
-    stable_checks = 0
-    previous_size = -1
-
     while time.monotonic() < deadline:
-        candidates = [
-            path for path in DOWNLOADS_DIR.glob("*.pdf")
-            if path not in before and path.is_file()
-        ]
-        candidate = max(candidates, key=lambda path: path.stat().st_mtime, default=None)
-        partial_downloads = list(DOWNLOADS_DIR.glob("*.crdownload"))
+        if _find_table_frame_path(driver) is not None:
+            return True
+        time.sleep(1)
+    return False
 
-        if candidate is not None:
+
+def get_document_rows(driver: webdriver.Chrome):
+    if not _switch_to_table(driver):
+        return []
+    rows = []
+    try:
+        for table in driver.find_elements(By.TAG_NAME, "table"):
+            for row in table.find_elements(By.TAG_NAME, "tr"):
+                try:
+                    if row.is_displayed() and parse_year_month(row.text):
+                        rows.append(row)
+                except StaleElementReferenceException:
+                    continue
+    finally:
+        driver.switch_to.default_content()
+    return rows
+
+
+def wait_for_pdf(before: set[str], timeout: int = DOWNLOAD_TIMEOUT_SECONDS) -> Path | None:
+    deadline = time.monotonic() + timeout
+    last_path: Path | None = None
+    last_size = -1
+    stable_checks = 0
+    while time.monotonic() < deadline:
+        candidates = [p for p in DOWNLOADS_DIR.glob("*.pdf") if p.name not in before and p.is_file()]
+        candidate = max(candidates, key=lambda p: p.stat().st_mtime, default=None)
+        partial = any(DOWNLOADS_DIR.glob("*.crdownload"))
+        if candidate:
             size = candidate.stat().st_size
-            if candidate == last_candidate and size == previous_size and not partial_downloads:
+            if candidate == last_path and size == last_size and not partial:
                 stable_checks += 1
                 if stable_checks >= 3:
                     return candidate
             else:
-                last_candidate = candidate
-                previous_size = size
-                stable_checks = 0
+                last_path, last_size, stable_checks = candidate, size, 0
         time.sleep(0.5)
-
     return None
 
 
 def save_pdf(pdf: Path, year: str, month: str) -> Path:
-    """Move a downloaded PDF to Desktop/NoiPA/YYYY with a sortable prefix."""
-    year_directory = DEST_ROOT / year
-    year_directory.mkdir(parents=True, exist_ok=True)
-    destination = year_directory / f"{year}-{month}_{pdf.name}"
+    folder = DEST_ROOT / year
+    folder.mkdir(parents=True, exist_ok=True)
+    destination = folder / f"{year}-{month}_{pdf.name}"
     counter = 1
     while destination.exists():
-        destination = year_directory / f"{year}-{month}_{counter}_{pdf.name}"
+        destination = folder / f"{year}-{month}_{counter}_{pdf.name}"
         counter += 1
     shutil.move(str(pdf), str(destination))
     return destination
 
 
+def download_row(driver: webdriver.Chrome, row_index: int) -> None:
+    rows = get_document_rows(driver)
+    if row_index >= len(rows):
+        return
+    row_text = rows[row_index].text.strip()
+    date = parse_year_month(row_text)
+    if not date or not _switch_to_table(driver):
+        return
+
+    try:
+        # Reacquire the row after switching into the correct frame context.
+        rows_in_context = []
+        for table in driver.find_elements(By.TAG_NAME, "table"):
+            for row in table.find_elements(By.TAG_NAME, "tr"):
+                try:
+                    if row.is_displayed() and parse_year_month(row.text):
+                        rows_in_context.append(row)
+                except StaleElementReferenceException:
+                    pass
+        if row_index >= len(rows_in_context):
+            return
+        cells = rows_in_context[row_index].find_elements(By.TAG_NAME, "td")
+        if len(cells) < 4:
+            print(f"Document cell not found: {row_text}")
+            return
+        document_cell = cells[3]
+        before = {p.name for p in DOWNLOADS_DIR.glob("*.pdf")}
+        controls = document_cell.find_elements(By.CSS_SELECTOR, "a, button, input, img")
+        try:
+            (controls[0] if controls else document_cell).click()
+        except WebDriverException:
+            driver.execute_script("arguments[0].click();", controls[0] if controls else document_cell)
+    finally:
+        driver.switch_to.default_content()
+
+    print(f"Downloading: {row_text}")
+    pdf = wait_for_pdf(before)
+    if pdf:
+        year, month = date
+        print(f"Saved: {save_pdf(pdf, year, month)}")
+    else:
+        print(f"No completed PDF detected for: {row_text}")
+
+    # A document may open in a separate tab; close only the extra tab.
+    handles = driver.window_handles
+    if len(handles) > 1:
+        main_handle = handles[0]
+        for handle in handles[1:]:
+            driver.switch_to.window(handle)
+            driver.close()
+        driver.switch_to.window(main_handle)
+
+
+def page_signature(driver: webdriver.Chrome) -> str:
+    return "|".join(row.text.strip() for row in get_document_rows(driver))
+
+
 def click_next_page(driver: webdriver.Chrome) -> bool:
-    """Click a visible enabled pagination link labeled 'avanti'."""
-    for link in driver.find_elements(By.XPATH, "//a[contains(translate(normalize-space(.), 'AVANTI', 'avanti'), 'avanti')]"):
-        try:
-            if not link.is_displayed():
+    if not _switch_to_table(driver):
+        return False
+    try:
+        links = driver.find_elements(
+            By.XPATH,
+            "//a[contains(translate(normalize-space(.), 'AVANTI', 'avanti'), 'avanti')]"
+        )
+        for link in links:
+            try:
+                if link.is_displayed() and link.get_attribute("aria-disabled") != "true":
+                    if "disabled" not in (link.get_attribute("class") or "").casefold():
+                        link.click()
+                        time.sleep(2)
+                        return True
+            except (StaleElementReferenceException, WebDriverException):
                 continue
-            classes = (link.get_attribute("class") or "").casefold()
-            if "disabled" in classes or link.get_attribute("aria-disabled") == "true":
-                continue
-            link.click()
-            time.sleep(1.5)
-            return True
-        except (StaleElementReferenceException, WebDriverException):
-            continue
-    return False
-
-
-def process_current_page(driver: webdriver.Chrome) -> str:
-    """Download rows on the current page; return a signature for loop checks."""
-    rows = visible_document_rows(driver)
-    signature = "|".join(row.text.strip() for row in rows)
-    print(f"Found {len(rows)} document row(s) on this page.")
-
-    for index in range(len(rows)):
-        try:
-            # Reacquire rows because the page may refresh after a document click.
-            current_rows = visible_document_rows(driver)
-            if index >= len(current_rows):
-                break
-            row = current_rows[index]
-            row_text = row.text.strip()
-            date = parse_year_month(row_text)
-            if not date:
-                continue
-            year, month = date
-            before = set(DOWNLOADS_DIR.glob("*.pdf"))
-            if not click_document_cell(row):
-                print(f"Could not click document for row: {row_text}")
-                continue
-
-            print(f"Waiting for PDF: {row_text}")
-            pdf = wait_for_pdf(before)
-            if pdf:
-                print(f"Saved: {save_pdf(pdf, year, month)}")
-            else:
-                print(f"No completed PDF download detected for row: {row_text}")
-
-            # If a PDF opened in a new tab, close it and return to the table.
-            handles = driver.window_handles
-            if len(handles) > 1:
-                main_handle = handles[0]
-                for handle in handles[1:]:
-                    driver.switch_to.window(handle)
-                    driver.close()
-                driver.switch_to.window(main_handle)
-        except (StaleElementReferenceException, WebDriverException) as error:
-            print(f"Skipped a row because the page changed: {error}")
-
-    return signature
+        return False
+    finally:
+        driver.switch_to.default_content()
 
 
 def main() -> None:
@@ -227,24 +261,29 @@ def main() -> None:
     driver = webdriver.Chrome(options=options)
     try:
         driver.get(NOIPA_URL)
-        print("Sign in to NoiPA in the Chrome window, open the cartellino table,")
-        input("then return here and press Enter to start downloading: ")
-        try:
-            wait_for_page_table(driver)
-        except TimeoutException:
-            print("No table appeared within five minutes. Check the browser and try again.")
+        print("Chrome uses a separate profile. Sign in there, open the cartellino table,")
+        input("then return here and press Enter. The script will search the page and its frames: ")
+        print("Looking for the table in the page and embedded frames (up to 5 minutes)...")
+        if not wait_for_table(driver):
+            print("No month/year document table detected. Leave the cartellino table visible and retry.")
             return
 
         previous_signature = None
         for page_number in range(1, MAX_PAGES + 1):
-            print(f"\n--- Page {page_number} ---")
-            signature = process_current_page(driver)
-            if not signature or signature == previous_signature:
-                print("Page is empty or unchanged; stopping to avoid duplicate downloads.")
+            signature = page_signature(driver)
+            if not signature:
+                print("No month/year rows detected; stopping without downloading.")
                 break
+            if signature == previous_signature:
+                print("The page did not change; stopping to avoid duplicates.")
+                break
+            print(f"\n--- Page {page_number}: {len(signature.split('|'))} document row(s) ---")
+            row_count = len(signature.split("|"))
+            for index in range(row_count):
+                download_row(driver, index)
             previous_signature = signature
             if not click_next_page(driver):
-                print("No enabled 'avanti' pagination link found; finished.")
+                print("No enabled 'avanti' link found; finished.")
                 break
         else:
             print(f"Reached the safety limit of {MAX_PAGES} pages.")

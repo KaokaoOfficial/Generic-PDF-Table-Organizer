@@ -2,72 +2,57 @@
 
 A small Python/Selenium helper for downloading your own NoiPA cartellino PDFs one at a time and organizing them into year-based folders on Windows.
 
-Example destination:
-
-```text
-Desktop\NoiPA\2016\2016-09_03_HR01_01_2016_09_75469_....pdf
-```
-
-The script does not ask for or store your password. You sign in manually in the browser it opens. It does not bypass authentication, CAPTCHA, or other access controls.
-
-> **Privacy:** NoiPA documents contain personal information. Keep the downloaded files private and do not commit or upload them to this repository.
+> **Privacy and security:** the script uses a separate Chrome profile and requires you to sign in manually. Do not publish or commit a full NoiPA URL containing temporary parameters such as `STARTKEY`, and never share passwords, session links, or downloaded documents. The script does not bypass authentication or access controls.
 
 ## Requirements
 
-- Windows 10/11
-- Python 3.10 or later
-- Google Chrome
+- Windows 10/11, Python 3.10+, and Google Chrome
 - A NoiPA account authorized to access the documents
 
 ## Setup
 
-1. Download or clone this repository.
-2. Open Command Prompt in the project folder.
-3. Install the dependency:
+1. Download/clone this repository and open Command Prompt in its folder.
+2. Install Selenium:
 
    ```bat
    py -m pip install -r requirements.txt
    ```
 
-4. Open `noipa_organizer.py` in Notepad and set `NOIPA_URL` to the NoiPA page where you start. Do not paste a URL containing a password, token, or other secret.
-5. Save the file.
+3. Run the program:
 
-Chrome will use a separate profile at `%LOCALAPPDATA%\NoiPAChromeProfile`. This avoids interfering with an already-running Chrome profile. The first time, sign in to NoiPA manually in the automation window, navigate to the cartellino table, then return to the Command Prompt and press Enter.
+   ```bat
+   py noipa_organizer.py
+   ```
 
-In that Chrome profile, make sure **Settings → Downloads → Ask where to save each file before downloading** is disabled. The script also configures automatic downloads to your Windows Downloads folder.
+   Or double-click `run_noipa.bat`.
+4. In the Chrome window opened by the script, sign in manually and navigate to the cartellino page showing the month/year document table. This is a separate profile from your normal Chrome window; signing in to another Chrome window does not sign in here.
+5. Return to the Command Prompt and press Enter. The script checks the main page and embedded frames for rows containing an Italian month and year.
 
-## Run
+Chrome is configured to download PDFs automatically to the Windows Downloads folder. If a save dialog still appears, disable **Chrome Settings → Downloads → Ask where to save each file before downloading** in the automation profile.
 
-From Command Prompt in the project folder:
+## Output
 
-```bat
-py noipa_organizer.py
+Files are moved to `Desktop\NoiPA\<YEAR>\` and prefixed with the row month and year, for example:
+
+```text
+Desktop\NoiPA\2016\2016-09_original-name.pdf
 ```
 
-Or double-click `run_noipa.bat`.
+The script downloads sequentially, then follows a visible `avanti` pagination link. Test a few documents first and review the console and output before processing the full archive.
 
-The script processes the visible table page, clicks the document cell for each row containing an Italian month and year, waits for the PDF download to finish, and moves it to `Desktop\NoiPA\<YEAR>`. It then follows the table's **avanti** link to continue. Review the console output as it runs.
+## Important configuration
 
-## Configuration
+`NOIPA_URL` defaults to the public portal home page. Do not put a personal or temporary URL (including a URL with `STARTKEY` or other session parameters) in this public repository. Navigate to the cartellino page manually in the browser opened by the script.
 
-At the top of `noipa_organizer.py`:
-
-- `NOIPA_URL`: starting page URL (set this yourself; do not share session URLs).
-- `DEST_ROOT`: output root, by default `Desktop\NoiPA`.
-- `DOWNLOADS_DIR`: temporary Chrome download folder, by default your Windows Downloads folder.
-- `MAX_PAGES`: safety limit for pagination.
-
-The program uses a dedicated Chrome profile; it does not attach to an already-open Chrome window. Log in once in the automation window. The profile normally remembers the session, but NoiPA may ask you to authenticate again later.
+Output and profile paths can be changed near the top of `noipa_organizer.py`. The dedicated profile is stored under `%LOCALAPPDATA%\NoiPAChromeProfile`.
 
 ## Troubleshooting
 
-- **It says no table is available:** make sure you have logged in and opened the cartellino page before pressing Enter.
-- **A document is not clicked:** NoiPA may have changed its page markup. Stop the script and report the row/document HTML (remove personal data first) so the selector can be adjusted.
-- **A save dialog appears:** disable Chrome's “Ask where to save each file before downloading” setting in the automation profile, then restart the script.
-- **Chrome cannot start:** close any other Chrome process using the dedicated `NoiPAChromeProfile` directory and try again.
-- **It does not advance pages:** pagination controls may have changed; the script intentionally stops rather than guessing and repeatedly downloading the same page.
+- **No month/year table detected:** confirm the cartellino table is visible in the automation Chrome window before pressing Enter. The script searches embedded frames too; if it still fails, stop and share only the terminal error (not a session URL or personal PDF).
+- **A document is not detected/downloaded:** NoiPA may have changed its page layout. Stop the run and review the table markup before retrying.
+- **Chrome cannot start:** close Chrome processes using the dedicated `NoiPAChromeProfile` and retry.
 
-Test with a small number of documents first and verify the resulting files and year folders before processing the full archive. Use the script only in accordance with NoiPA's terms and your organization's policies.
+Use this tool only for documents you are authorized to access and in accordance with NoiPA's terms and your organization's policies.
 
 ## License
 
